@@ -89,8 +89,9 @@ plotImportance(model, top_n = 15)
 ```
 
 ## How It Works
-<img width="855" height="52<img width="901" height="657" alt="Screenshot from 2026-02-23 12-28-42" src="https://github.com/user-attachments/assets/0c47f10c-0c55-47f1-a0b9-234dc88711d2" />
-6" alt="Screenshot from 2026-02-23 12-23-47" src="https://github.com/user-attachments/assets/8b0a43bb-8d2c-4d20-b45d-fbe70e62413b" />
+<img width="855" height="526" alt="Screenshot from 2026-02-23 12-23-47" src="https://github.com/user-attachments/assets/ef6247c4-3a06-4ac6-858f-c02367ba34ce" />
+<img width="901" height="657" alt="Screenshot from 2026-02-23 12-28-42" src="https://github.com/user-attachments/assets/442d3e9b-a8fa-4ce8-bebd-e746a2d19024" />
+
 
 <img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-30" src="https://github.com/user-attachments/assets/e16f2db3-c9e8-409f-869a-65d41ed52fd9" />
 <img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-44" src="https://github.com/user-attachments/assets/d264e4ad-e136-43b0-9474-0d1e732c2108" />
