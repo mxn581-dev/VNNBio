@@ -1,0 +1,43 @@
+#!/bin/sh
+# configure — Check for Julia system dependency
+#
+# VNNBio requires Julia >= 1.10 for model training. The R-side utilities
+# (mask building, visualization of pre-computed results) work without Julia.
+
+JULIA_MIN_MAJOR=1
+JULIA_MIN_MINOR=10
+
+check_julia() {
+    if command -v julia >/dev/null 2>&1; then
+        JULIA_VERSION=$(julia --version 2>/dev/null | sed 's/julia version //')
+        JULIA_MAJOR=$(echo "$JULIA_VERSION" | cut -d. -f1)
+        JULIA_MINOR=$(echo "$JULIA_VERSION" | cut -d. -f2)
+
+        if [ "$JULIA_MAJOR" -gt "$JULIA_MIN_MAJOR" ] 2>/dev/null; then
+            return 0
+        elif [ "$JULIA_MAJOR" -eq "$JULIA_MIN_MAJOR" ] && \
+             [ "$JULIA_MINOR" -ge "$JULIA_MIN_MINOR" ] 2>/dev/null; then
+            return 0
+        else
+            echo "NOTE: Found Julia $JULIA_VERSION, but VNNBio requires >= ${JULIA_MIN_MAJOR}.${JULIA_MIN_MINOR}."
+            echo "      Model training will not be available until Julia is updated."
+            echo "      Download from: https://julialang.org/downloads/"
+            return 1
+        fi
+    else
+        echo "NOTE: Julia not found on PATH."
+        echo "      VNNBio R-side utilities (mask building, accessors) will work."
+        echo "      For model training, install Julia >= ${JULIA_MIN_MAJOR}.${JULIA_MIN_MINOR}:"
+        echo "      https://julialang.org/downloads/"
+        return 1
+    fi
+}
+
+echo "Checking for Julia..."
+if check_julia; then
+    echo "Found Julia $JULIA_VERSION — OK."
+fi
+
+# Always exit 0 so the package installs even without Julia.
+# Julia is only required at runtime for trainVNN().
+exit 0

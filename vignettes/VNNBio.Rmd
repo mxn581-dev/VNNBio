@@ -1,0 +1,270 @@
+---
+title: "VNNBio: Visible Neural Networks for Interpretable Biology"
+author: "Minh Hieu Nguyen"
+date: "`r Sys.Date()`"
+output:
+    BiocStyle::html_document:
+        toc: true
+        toc_depth: 3
+vignette: >
+    %\VignetteIndexEntry{VNNBio}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment  = "#>"
+)
+```
+
+# Introduction
+
+**Visible Neural Networks (VNNs)** constrain neural network architecture using
+prior biological knowledge. Unlike standard neural networks where hidden layers
+are opaque, every hidden node in a VNN corresponds to a known biological
+concept -- a pathway, gene ontology term, or biological system.
+
+VNNBio is the first R/Bioconductor-native implementation of VNNs, designed for
+integration with standard genomics workflows via `SummarizedExperiment`.
+
+**Key idea:** A sparse binary mask $M$ restricts connectivity so that gene $i$
+connects to hidden node $j$ only if gene $i$ is annotated to pathway $j$.
+The forward pass becomes:
+
+$$z = \sigma\left((W \odot M) \cdot x + b\right)$$
+
+where $\odot$ is the element-wise (Hadamard) product. After training,
+per-pathway importance is computed as
+$\text{score}(j) = \sum_i |W_{ij} \cdot M_{ij}|$.
+
+## Related Work
+
+VNNBio builds on the VNN paradigm introduced by:
+
+- **DCell** (Ma et al., *Nature Methods* 2018): First VNN mapping the Gene
+  Ontology hierarchy to neural network layers.
+- **P-NET** (Elmarakeby et al., *Nature* 2021): VNN for predicting prostate
+  cancer state from genomic data using Reactome pathways.
+- **EMOGI** (Schulte-Sasse et al., *Nature Machine Intelligence* 2021):
+  Multi-omics graph integration for cancer gene prediction.
+
+VNNBio differs by providing Bioconductor-native S4 classes, MSigDB/KEGG/GO
+pathway support, and a Julia backend (Lux.jl) for training.
+
+# Installation
+
+```{r install, eval=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("VNNBio")
+
+# Julia >= 1.10 is required for model training (not for mask building):
+# https://julialang.org/downloads/
+```
+
+# Quick Start: TCGA-BRCA Classification
+
+This vignette demonstrates a complete analysis: classifying **invasive ductal
+carcinoma (IDC) vs invasive lobular carcinoma (ILC)** from TCGA breast cancer
+RNA-seq data using Hallmark gene sets as the VNN architecture.
+
+## Step 1: Load Data
+
+```{r load-data, eval=FALSE}
+library(VNNBio)
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+
+query <- GDCquery(
+    project       = "TCGA-BRCA",
+    data.category = "Transcriptome Profiling",
+    data.type     = "Gene Expression Quantification",
+    workflow.type  = "STAR - Counts"
+)
+GDCdownload(query)
+se <- GDCprepare(query)
+
+# Strip Ensembl version numbers (ENSG00000141510.18 -> ENSG00000141510)
+rownames(se) <- sub("\\.\\d+$", "", rownames(se))
+
+# Filter to IDC vs ILC
+keep <- se$paper_BRCA_Pathology %in% c("IDC", "ILC")
+se_sub <- se[, keep]
+se_sub$label <- se_sub$paper_BRCA_Pathology
+
+# Log-transform TPM
+assay(se_sub, "log_tpm") <- log1p(assay(se_sub, "tpm_unstrand"))
+```
+
+## Step 2: Build Pathway Mask
+
+The mask encodes which genes belong to which pathways. This is the
+biology-to-math bridge -- it converts database annotations into a sparse
+binary matrix that constrains neural network connectivity.
+
+```{r build-mask, eval=FALSE}
+gpm <- buildMapFromMSigDB(
+    category      = "H",
+    gene_id_type  = "ensembl_gene",
+    feature_genes = rownames(se_sub)
+)
+gpm
+#> GenePathwayMap object
+#>   Source:     MSigDB_H
+#>   Genes:      60660
+#>   Pathways:   50
+#>   Nonzeros:  7316 (0.24% density)
+```
+
+The mask has 60,660 rows (genes) and 50 columns (Hallmark pathways).
+Only 0.24% of possible connections exist -- the rest are blocked by biology.
+
+## Step 3: Define Architecture and Train
+
+```{r train, eval=FALSE}
+arch <- buildArchitecture(gpm, activation = "tanh", n_output = 1L)
+
+initJuliaBackend()
+model <- trainVNN(
+    se_sub, arch,
+    label_col     = "label",
+    assay_name    = "log_tpm",
+    task          = "classification",
+    epochs        = 200L,
+    learning_rate = 1e-3,
+    batch_size    = 64L,
+    patience      = 20L,
+    min_delta     = 1e-4,
+    seed          = 42L
+)
+```
+
+Early stopping triggered at epoch 113 (patience = 20), restoring the best
+parameters from epoch 93.
+
+## Step 4: Examine Results
+
+We ship the pre-computed results from the analysis above so the
+remaining sections can execute without Julia or TCGA downloads.
+
+```{r load-results}
+library(VNNBio)
+
+importance <- read.csv(
+    system.file("extdata", "tcga_brca_importance.csv", package = "VNNBio"),
+    row.names = 1
+)
+history <- read.csv(
+    system.file("extdata", "tcga_brca_history.csv", package = "VNNBio"),
+    row.names = 1
+)
+```
+
+### Training Curve
+
+```{r training-curve, fig.width=7, fig.height=4}
+plot(history$epoch, history$train_loss, type = "l", col = "#e85d5d", lwd = 2,
+     xlab = "Epoch", ylab = "Loss", main = "VNN Training: TCGA-BRCA IDC vs ILC",
+     ylim = range(c(history$train_loss, history$val_loss)))
+lines(history$epoch, history$val_loss, col = "#56b8f0", lwd = 2)
+legend("topright", c("Training", "Validation"),
+       col = c("#e85d5d", "#56b8f0"), lwd = 2, bty = "n")
+abline(v = which.min(history$val_loss), lty = 2, col = "gray60")
+text(which.min(history$val_loss), max(history$val_loss) * 0.95,
+     paste0("Best epoch: ", which.min(history$val_loss)),
+     pos = 4, cex = 0.8, col = "gray60")
+```
+
+Validation loss reaches its minimum around epoch 93, after which it
+plateaus. Early stopping restores the parameters from this point.
+
+### Top Pathways
+
+```{r top-pathways}
+head(importance, 20)
+```
+
+### Importance Visualization
+
+```{r importance-plot, fig.width=9, fig.height=6}
+library(ggplot2)
+
+top15 <- importance[1:15, ]
+top15$pathway <- factor(top15$pathway, levels = rev(top15$pathway))
+
+ggplot(top15, aes(x = pathway, y = importance, fill = importance)) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    scale_fill_gradient(low = "#f7c59f", high = "#b2182b") +
+    labs(title = "VNN Pathway Importance: IDC vs ILC",
+         subtitle = "MSigDB Hallmark gene sets",
+         x = NULL, y = "Importance (sum |W * mask|)") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.y = element_text(size = 9))
+```
+
+# Biological Interpretation
+
+The top pathways are biologically coherent with known IDC vs ILC biology:
+
+- **APICAL_JUNCTION (#4):** ILC is defined by loss of E-cadherin (CDH1),
+  an apical junction protein. This is the defining molecular event
+  in lobular carcinoma. The model recovered this without being told.
+
+- **ESTROGEN_RESPONSE (#8, #9):** ILC is overwhelmingly ER-positive.
+  Both early and late estrogen response pathways appear in the top 10.
+
+- **KRAS_SIGNALING (#1, #3):** KRAS signaling up/down reflects
+  proliferative and stromal differences between the two subtypes.
+
+- **MYOGENESIS (#2):** Smooth muscle / myoepithelial gene programs
+  differ between ductal and lobular architectures.
+
+This demonstrates the core value of VNNs: the model's architecture *is* the
+explanation. No post-hoc interpretability methods are needed.
+
+# Building Custom Masks
+
+You are not limited to MSigDB. Any gene-pathway mapping can be used:
+
+```{r custom-mask}
+custom_df <- data.frame(
+    gene_id    = c("ENSG00000141510", "ENSG00000141510",
+                   "ENSG00000012048", "ENSG00000039068",
+                   "ENSG00000146648", "ENSG00000171862"),
+    pathway_id = c("Apoptosis", "p53_Signaling",
+                   "DNA_Repair", "DNA_Repair",
+                   "RTK_Signaling", "RTK_Signaling")
+)
+
+gpm_custom <- buildGenePathwayMap(
+    custom_df,
+    min_pathway_size = 1,
+    source = "custom"
+)
+gpm_custom
+```
+
+## Handling Gene ID Mismatches
+
+A common problem: your expression data uses versioned Ensembl IDs
+(`ENSG00000141510.18`) but pathway databases use unversioned IDs
+(`ENSG00000141510`). Strip the version suffix before building the mask:
+
+```{r gene-id-fix, eval=FALSE}
+rownames(se) <- sub("\\.\\d+$", "", rownames(se))
+```
+
+For Entrez-to-Symbol or other conversions, use `harmonizeGeneIds()`:
+
+```{r harmonize, eval=FALSE}
+harmonizeGeneIds(se, from = "ENTREZID", to = "ENSEMBL")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,59 @@
+Package: VNNBio
+Title: Visible Neural Networks for Biologically-Constrained Interpretable
+    Machine Learning
+Version: 0.99.0
+Authors@R: 
+    person("Minh Hieu", "Nguyen", , "mxn581@case.edu",
+           role = c("aut", "cre"),
+           comment = c(ORCID = "0009-0009-6206-6121"))
+Description: Implements Visible Neural Networks (VNNs) whose architecture is
+    constrained by prior biological knowledge such as gene-pathway mappings
+    from KEGG, Gene Ontology, or MSigDB. Network connectivity mirrors known
+    biology, so each hidden node corresponds to an interpretable biological
+    concept (pathway, gene ontology term, or biological system). Heavy
+    computation is delegated to a Julia backend (Lux.jl) via JuliaConnectoR,
+    while the R frontend provides Bioconductor-native data handling with
+    SummarizedExperiment objects and publication-ready interpretability
+    visualizations. The key output is per-pathway importance scores that
+    reveal which biological processes drive model predictions.
+License: Artistic-2.0
+URL: https://github.com/mxn581-dev/VNNBio
+BugReports: https://github.com/mxn581-dev/VNNBio/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.4.0),
+    methods
+Imports:
+    Matrix,
+    SummarizedExperiment,
+    S4Vectors,
+    ggplot2
+Suggests:
+    BiocStyle,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    circlize,
+    scales,
+    ComplexHeatmap,
+    igraph,
+    msigdbr,
+    AnnotationDbi,
+    org.Hs.eg.db,
+    JuliaConnectoR
+biocViews:
+    Software,
+    GeneExpression,
+    Pathways,
+    Classification,
+    Regression,
+    FeatureExtraction,
+    Network,
+    GO,
+    KEGG,
+    SystemsBiology
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+SystemRequirements: Julia (>= 1.10) - https://julialang.org/downloads/

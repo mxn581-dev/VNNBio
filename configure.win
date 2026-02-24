@@ -1,0 +1,18 @@
+@echo off
+REM configure.win — Check for Julia system dependency on Windows
+REM
+REM VNNBio requires Julia >= 1.10 for model training. The R-side utilities
+REM (mask building, visualization) work without Julia.
+
+where julia >nul 2>&1
+if %ERRORLEVEL% == 0 (
+    echo Found Julia on PATH. Model training will be available.
+) else (
+    echo NOTE: Julia not found on PATH.
+    echo       VNNBio R-side utilities will work without Julia.
+    echo       For model training, install Julia from:
+    echo       https://julialang.org/downloads/
+)
+
+REM Always exit 0 so the package installs even without Julia.
+exit /b 0

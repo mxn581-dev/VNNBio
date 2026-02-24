@@ -1,0 +1,8 @@
+bibentry(
+    bibtype  = "Manual",
+    title    = "VNNBio: Visible Neural Networks for Biologically-Constrained Interpretable Machine Learning",
+    author   = person("Minh Hieu", "Nguyen"),
+    year     = "2026",
+    note     = sprintf("R package version %s", meta$Version),
+    url      = "https://github.com/mxn581-dev/VNNBio"
+)
