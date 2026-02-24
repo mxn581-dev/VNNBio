@@ -13,6 +13,7 @@ corresponds to a known biological concept — a pathway, gene ontology term, or
 biological system — making the model's reasoning directly interpretable.
 
 ## Why VNNBio?
+<img width="676" height="369" alt="vnnbio-removebg-preview" src="https://github.com/user-attachments/assets/cbffd159-3f6c-4a23-8c1f-7fc188920a2c" />
 
 | Feature | VNNBio | DCell | P-NET |
 |---|---|---|---|
@@ -88,21 +89,12 @@ plotImportance(model, top_n = 15)
 ```
 
 ## How It Works
+<img width="855" height="52<img width="901" height="657" alt="Screenshot from 2026-02-23 12-28-42" src="https://github.com/user-attachments/assets/0c47f10c-0c55-47f1-a0b9-234dc88711d2" />
+6" alt="Screenshot from 2026-02-23 12-23-47" src="https://github.com/user-attachments/assets/8b0a43bb-8d2c-4d20-b45d-fbe70e62413b" />
 
-```
-Gene Expression      Sparse Mask M         Visible Neural Network
-[samples × genes]    [genes × pathways]    
-                                            Gene₁ ─┐
- ┌───────────────┐   ┌─────────────────┐          ├─ Pathway_A ─┐
- │ 0.2  1.3  ... │   │ 1  0  1  0  0   │   Gene₂ ─┤             │
- │ 0.8  0.1  ... │ × │ 0  1  0  1  0   │   Gene₃ ─┘             ├─ Output
- │ ...           │   │ 1  1  0  0  1   │          ┌─ Pathway_B ─┘
- └───────────────┘   │ 0  0  1  1  0   │   Gene₄ ─┤
-                     └─────────────────┘   Gene₅ ─┘
+<img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-30" src="https://github.com/user-attachments/assets/e16f2db3-c9e8-409f-869a-65d41ed52fd9" />
+<img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-44" src="https://github.com/user-attachments/assets/d264e4ad-e136-43b0-9474-0d1e732c2108" />
 
-Hidden layer: z = σ((W ⊙ M)x + b)
-Importance:   score(pathway_j) = Σᵢ |Wᵢⱼ · Mᵢⱼ|
-```
 
 The mask `M` is derived from biological databases (MSigDB, KEGG, GO). Only
 connections permitted by the mask can carry signal. After training,
