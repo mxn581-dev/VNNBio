@@ -20,7 +20,7 @@ biological system — making the model's reasoning directly interpretable.
 | **Language** | R + Julia | Python | Python |
 | **Bioconductor integration** | ✓ SummarizedExperiment | ✗ | ✗ |
 | **Pathway sources** | MSigDB, KEGG, GO, custom | GO only | Reactome |
-| **Interpretable output** | Per-pathway importance | Per-GO-term | Per-pathway |
+| **Interpretable output** | Shapley-based pathway attribution | Per-GO-term | Per-pathway |
 
 **Key idea:** A sparse mask `M` constrains network connectivity so that gene
 *i* can only connect to pathway *j* if gene *i* is annotated to pathway *j*.
@@ -86,6 +86,16 @@ importanceScores(model)
 #>                                          8.432                               6.891 ...
 
 plotImportance(model, top_n = 15)
+
+
+# 5.1.  Interpret — axiomatically fair pathway attribution
+shap <- shapley_pathway_attribution(model, se, mode = "global", 
+                                     method = "structure_aware")
+plot_pathway_dag_attribution(shap)
+
+# 6. Patient-specific mechanistic subtypes
+local_shap <- shapley_pathway_attribution(model, se, mode = "local")
+subtypes <- stratify_patients(local_shap, method = "leiden")
 ```
 
 ## How It Works
