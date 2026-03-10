@@ -20,19 +20,22 @@ biological system — making the model's reasoning directly interpretable.
 | **Language** | R + Julia | Python | Python |
 | **Bioconductor integration** | ✓ SummarizedExperiment | ✗ | ✗ |
 | **Pathway sources** | MSigDB, KEGG, GO, custom | GO only | Reactome |
-| **Interpretable output** | Shapley-based pathway attribution | Per-GO-term | Per-pathway |
+| **Interpretability** | Shapley pathway attribution | Per-GO-term weights | Per-pathway weights |
+| **Patient-level** | ✓ Per-sample Shapley profiles | ✗ | ✗ |
+| **Statistical testing** | ✓ Permutation p-values | ✗ | ✗ |
 
 **Key idea:** A sparse mask `M` constrains network connectivity so that gene
 *i* can only connect to pathway *j* if gene *i* is annotated to pathway *j*.
-After training, pathway importance is read directly from the learned weights —
-no post-hoc interpretability methods required.
+After training, Shapley values provide axiomatically fair attribution of each
+prediction to the underlying biological pathways — for each individual patient.
 
 ## Installation
 
 ### Prerequisites
 
 VNNBio requires [Julia](https://julialang.org/downloads/) (>= 1.10) for model
-training. R-side utilities (mask building, visualization) work without Julia.
+training. R-side utilities (mask building, visualization, Shapley attribution
+on pre-extracted parameters) work without Julia.
 
 ```r
 # Install from Bioconductor (when available)
@@ -77,44 +80,79 @@ arch <- buildArchitecture(gpm, activation = "tanh", n_output = 1L)
 # 4. Train
 initJuliaBackend()
 model <- trainVNN(se, arch, label_col = "condition",
-                  task = "classification", epochs = 100L)
+                  task = "classification", epochs = 200L,
+                  patience = 20L)
 
-# 5. Interpret — which pathways drive the prediction?
-importanceScores(model)
-#> $`MSigDB_H pathways`
-#>     HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION    HALLMARK_ESTROGEN_RESPONSE_EARLY
-#>                                          8.432                               6.891 ...
+# 5. Shapley pathway attribution
+shap <- shapleyPathwayAttribution(model, se, mode = "both", n_perm = 200)
 
-plotImportance(model, top_n = 15)
+# Global ranking — which pathways matter most across the cohort?
+shap$global
+#>     HALLMARK_KRAS_SIGNALING_DN   HALLMARK_MYOGENESIS
+#>                          0.032                 0.028 ...
 
+plotShapleyGlobal(shap, top_n = 15)
 
-# 5.1.  Interpret — axiomatically fair pathway attribution
-shap <- shapley_pathway_attribution(model, se, mode = "global", 
-                                     method = "structure_aware")
-plot_pathway_dag_attribution(shap)
+# Patient-level — why was THIS patient classified this way?
+plotShapleyLocal(shap, sample_idx = 1)
 
-# 6. Patient-specific mechanistic subtypes
-local_shap <- shapley_pathway_attribution(model, se, mode = "local")
-subtypes <- stratify_patients(local_shap, method = "leiden")
+# Beeswarm summary — distribution across all patients
+plotShapleySummary(shap, top_n = 15)
+
+# 6. Statistical significance via permutation testing
+perm <- permutePathwayImportance(model, n_perm = 1000)
+plotPermutationResults(perm, top_n = 15)
 ```
 
 ## How It Works
 <img width="855" height="526" alt="Screenshot from 2026-02-23 12-23-47" src="https://github.com/user-attachments/assets/ef6247c4-3a06-4ac6-858f-c02367ba34ce" />
 <img width="901" height="657" alt="Screenshot from 2026-02-23 12-28-42" src="https://github.com/user-attachments/assets/442d3e9b-a8fa-4ce8-bebd-e746a2d19024" />
 
-
 <img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-30" src="https://github.com/user-attachments/assets/e16f2db3-c9e8-409f-869a-65d41ed52fd9" />
 <img width="900" height="468" alt="Screenshot from 2026-02-23 12-29-44" src="https://github.com/user-attachments/assets/d264e4ad-e136-43b0-9474-0d1e732c2108" />
 
-
 The mask `M` is derived from biological databases (MSigDB, KEGG, GO). Only
 connections permitted by the mask can carry signal. After training,
-`importanceScores()` reveals which pathways the model relies on.
+`shapleyPathwayAttribution()` computes axiomatically fair importance scores
+that decompose each prediction into per-pathway contributions.
+
+### Shapley Attribution
+
+VNNBio exploits the VNN's architectural constraint for efficient Shapley
+computation. Because each pathway's activation depends only on its own genes
+(enforced by the mask), pathway activations are precomputed once per sample.
+Coalition evaluation then reduces to a single output-layer dot product —
+enabling exact Shapley values in seconds for hundreds of samples and 50+
+pathways.
+
+The Shapley values satisfy four axioms:
+- **Efficiency:** attributions sum exactly to `prediction - baseline`
+- **Symmetry:** identical pathways receive equal attribution
+- **Null Player:** inactive pathways receive zero attribution
+- **Linearity:** attributions compose additively
+
+## TCGA-BRCA Validation
+
+VNNBio was validated on TCGA breast cancer RNA-seq (526 IDC vs 137 ILC,
+50 Hallmark pathways). Key results:
+
+- **APICAL_JUNCTION** ranked in the top 5 — ILC is defined by CDH1
+  (E-cadherin) loss, an apical junction protein
+- **TGF_BETA_SIGNALING** rose from rank 33 (weight-magnitude) to rank 4
+  (Shapley) — a validated driver of the diffuse ILC growth pattern
+- **Estrogen response** pathways ranked in the top 15 — ILC is
+  overwhelmingly ER+
+- Shapley vs weight-magnitude Spearman ρ = 0.71, indicating meaningful
+  differences in pathway ranking
+- Patient-level Shapley profiles revealed within-subtype heterogeneity
+  invisible to population-level methods like GSEA
 
 ## Documentation
 
 - **Vignette:** `vignette("VNNBio")` — full walkthrough with real data
-- **Reference:** `?trainVNN`, `?buildGenePathwayMap`, `?plotImportance`
+- **Reference:** `?trainVNN`, `?buildGenePathwayMap`, `?shapleyPathwayAttribution`
+- **Math reference:** `SHAPLEY_MATH.md` — formal definitions of flat and
+  DAG-decomposed Shapley attribution
 - **Architecture guide:** `system.file("ARCHITECTURE.md", package = "VNNBio")`
 
 ## Citation
