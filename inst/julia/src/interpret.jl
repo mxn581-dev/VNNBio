@@ -42,6 +42,63 @@ function get_masked_weights(layer_index::Int64, model_ref::String="")
     end
 end
 
+
+"""
+    extract_vnn_params(model_ref)
+
+Extract all model parameters (weights, biases, masks) for R-side computation.
+Returns a Dict with:
+  - "n_layers": total number of layers
+  - "layer_<i>_weight": weight matrix for layer i
+  - "layer_<i>_bias": bias vector for layer i
+  - "layer_<i>_has_mask": whether layer i has a mask (MaskedDense vs Dense)
+  - "layer_<i>_mask": mask matrix (only if has_mask is true)
+
+This enables pure-R forward passes for Shapley attribution without
+repeated Julia calls per coalition evaluation.
+"""
+function extract_vnn_params(model_ref::String="")
+    if isempty(MODEL_STORE)
+        error("No trained model found. Call train_vnn first.")
+    end
+
+    model_key = if isempty(model_ref)
+        last(collect(keys(MODEL_STORE)))
+    else
+        if !haskey(MODEL_STORE, model_ref)
+            error("Model '$model_ref' not found in MODEL_STORE. " *
+                  "Available: $(collect(keys(MODEL_STORE)))")
+        end
+        model_ref
+    end
+
+    stored = MODEL_STORE[model_key]
+    ps = stored["ps"]
+    st = stored["st"]
+
+    layer_keys = collect(keys(ps))
+    n_layers = length(layer_keys)
+
+    result = Dict{String, Any}()
+    result["n_layers"] = n_layers
+
+    for (i, lk) in enumerate(layer_keys)
+        result["layer_$(i)_weight"] = Matrix(Float64.(ps[lk].weight))
+        result["layer_$(i)_bias"]   = Vector(Float64.(ps[lk].bias))
+
+        has_mask = hasproperty(st[lk], :mask)
+        result["layer_$(i)_has_mask"] = has_mask
+
+        if has_mask
+            result["layer_$(i)_mask"] = Matrix(Float64.(st[lk].mask))
+        end
+    end
+
+    @info "Extracted parameters for $n_layers layers from model '$model_key'"
+    return result
+end
+
+
 """
     predict_vnn(X_new, model_ref)
 

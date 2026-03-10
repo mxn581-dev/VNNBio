@@ -24,7 +24,7 @@ using Lux
 using Optimisers
 using Zygote
 
-export receive_sparse_mask, receive_data, train_vnn, get_masked_weights, predict_vnn
+export receive_sparse_mask, receive_data, train_vnn, get_masked_weights, predict_vnn, extract_vnn_params
 
 include("masks.jl")
 include("model.jl")

@@ -64,6 +64,7 @@ initJuliaBackend <- function(julia_path = NULL, force = FALSE) {
         _vnn_train_vnn(args...)           = Base.invokelatest(VNNCore.train_vnn, args...)
         _vnn_get_masked_weights(args...)  = Base.invokelatest(VNNCore.get_masked_weights, args...)
         _vnn_predict_vnn(args...)         = Base.invokelatest(VNNCore.predict_vnn, args...)
+        _vnn_extract_vnn_params(args...)  = Base.invokelatest(VNNCore.extract_vnn_params, args...)
     ')
 
     .vnn_env$julia_ready <- TRUE
