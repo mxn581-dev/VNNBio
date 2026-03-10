@@ -108,45 +108,52 @@
 #' @return Numeric scalar prediction.
 #' @keywords internal
 .forwardPassR <- function(x, params, active_pathways = NULL) {
-
-    act_fn <- .activation_fn(params$activation)
-    h <- as.numeric(x)
-
-    for (i in seq_along(params$layers)) {
-        layer <- params$layers[[i]]
-        W <- layer$weight
-        b <- layer$bias
-
-        ## For the first masked layer, zero out inactive pathways
-        if (!is.null(active_pathways) && !is.null(layer$mask)) {
-            W_masked <- W * layer$mask
-            inactive <- setdiff(seq_len(ncol(W_masked)), active_pathways)
-            if (length(inactive) > 0) {
-                W_masked[, inactive] <- 0
-            }
-        } else if (!is.null(layer$mask)) {
-            W_masked <- W * layer$mask
-        } else {
-            W_masked <- W
-        }
-
-        ## z = W' * h + b
-        z <- as.numeric(crossprod(W_masked, h)) + b
-
-        ## Apply activation: hidden layers get the specified activation,
-        ## output layer gets sigmoid (classification) or identity (regression)
-        if (i < params$n_layers) {
-            z <- act_fn(z)
-        } else {
-            if (params$task == "classification") {
-                z <- .sigmoid(z)
-            }
-        }
-
-        h <- z
+  
+  act_fn <- .activation_fn(params$activation)
+  h <- as.numeric(x)
+  
+  for (i in seq_along(params$layers)) {
+    layer <- params$layers[[i]]
+    W <- layer$weight
+    b <- layer$bias
+    
+    ## Apply mask if present
+    if (!is.null(layer$mask)) {
+      W_masked <- W * layer$mask
+    } else {
+      W_masked <- W
     }
-
-    h
+    
+    ## z = W' * h + b
+    if (nrow(W_masked) == length(h)) {
+      z <- as.numeric(crossprod(W_masked, h)) + b
+    } else {
+      z <- as.numeric(W_masked %*% h) + b
+    }
+    
+    ## Apply activation: hidden layers get the specified activation,
+    ## output layer gets sigmoid (classification) or identity (regression)
+    if (i < params$n_layers) {
+      z <- act_fn(z)
+      
+      ## Zero out inactive pathways AFTER activation
+      ## This ensures h_j = 0 for inactive pathways (not sigma(b_j))
+      if (!is.null(active_pathways) && !is.null(layer$mask)) {
+        inactive <- setdiff(seq_len(length(z)), active_pathways)
+        if (length(inactive) > 0) {
+          z[inactive] <- 0
+        }
+      }
+    } else {
+      if (params$task == "classification") {
+        z <- .sigmoid(z)
+      }
+    }
+    
+    h <- z
+  }
+  
+  h
 }
 
 
@@ -210,7 +217,8 @@
     h_masked[coalition] <- precomp$h[coalition]
 
     ## Output layer: y = f(W_out' * h_masked + b_out)
-    logit <- as.numeric(crossprod(precomp$W_out, h_masked)) + precomp$b_out
+    w_vec <- as.numeric(precomp$W_out)
+    logit <- sum(w_vec * h_masked) + as.numeric(precomp$b_out)
 
     if (precomp$task == "classification") {
         .sigmoid(logit)

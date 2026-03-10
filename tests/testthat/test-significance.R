@@ -124,7 +124,7 @@ test_that("observed importance matches colSums(abs(W))", {
     # Match by pathway name since result is sorted by p_value
     for (pw in names(expected_obs)) {
         row <- result[result$pathway == pw, ]
-        expect_equal(row$observed, expected_obs[pw],
+        expect_equal(row$observed, unname(expected_obs[pw]),
                      tolerance = 1e-10,
                      info = paste("Pathway:", pw))
     }
@@ -143,7 +143,7 @@ test_that("pathway_size matches mask column sums", {
     expected_sizes <- colSums(fix$mask != 0)
     for (pw in names(expected_sizes)) {
         row <- result[result$pathway == pw, ]
-        expect_equal(row$pathway_size, expected_sizes[pw],
+        expect_equal(row$pathway_size, unname(expected_sizes[pw]),
                      info = paste("Pathway:", pw))
     }
 })

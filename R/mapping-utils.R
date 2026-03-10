@@ -204,15 +204,21 @@ buildMapFromMSigDB <- function(species = "Homo sapiens",
              "  BiocManager::install('msigdbr')")
     }
 
-    msig_args <- list(species = species, category = category)
+    if ("collection" %in% names(formals(msigdbr::msigdbr))) {
+      msig_args <- list(species = species, collection = category)
+      if (!is.null(subcategory)) msig_args$subcollection <- subcategory
+    } else {
+      msig_args <- list(species = species, category = category)
+      if (!is.null(subcategory)) msig_args$subcategory <- subcategory
+    }
     if (!is.null(subcategory)) msig_args$subcategory <- subcategory
     msig_df <- do.call(msigdbr::msigdbr, msig_args)
 
     ## Map msigdbr column names to our standard
     id_col <- switch(gene_id_type,
-        ensembl_gene = "ensembl_gene",
-        entrez_gene  = "entrez_gene",
-        gene_symbol  = "gene_symbol"
+                     ensembl_gene = "ensembl_gene",
+                     entrez_gene  = if ("entrez_gene" %in% colnames(msig_df)) "entrez_gene" else "ncbi_gene",
+                     gene_symbol  = "gene_symbol"
     )
 
     mapping <- data.frame(
