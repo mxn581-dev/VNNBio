@@ -65,6 +65,7 @@ initJuliaBackend <- function(julia_path = NULL, force = FALSE) {
         _vnn_get_masked_weights(args...)  = Base.invokelatest(VNNCore.get_masked_weights, args...)
         _vnn_predict_vnn(args...)         = Base.invokelatest(VNNCore.predict_vnn, args...)
         _vnn_extract_vnn_params(args...)  = Base.invokelatest(VNNCore.extract_vnn_params, args...)
+        _vnn_receive_init_weights(args...) = Base.invokelatest(VNNCore.receive_init_weights, args...)
     ')
 
     .vnn_env$julia_ready <- TRUE
@@ -112,6 +113,20 @@ initJuliaBackend <- function(julia_path = NULL, force = FALSE) {
 # Training dispatch
 # =============================================================================
 
+# =============================================================================
+# bridge-julia-patches.R
+#
+# Drop-in replacement for trainVNN() in R/bridge-julia.R.
+# Changes vs current version:
+#   1. New param: pretrained (PretrainedVNN object for Mode 2 init)
+#   2. New param: class_weight ("balanced" or named numeric vector)
+#   3. Transfers pretrained init weights to Julia via _vnn_receive_init_weights
+#   4. Transfers per-sample weights to Julia for weighted loss
+#
+# INSTRUCTIONS: Replace the trainVNN() function in R/bridge-julia.R with
+# this version. Keep all other functions in that file unchanged.
+# =============================================================================
+
 #' Train a VNN Model via Julia
 #'
 #' Serializes the expression matrix, label vector, and architecture masks to
@@ -134,6 +149,20 @@ initJuliaBackend <- function(julia_path = NULL, force = FALSE) {
 #'   Default 0 (disabled).
 #' @param min_delta Numeric. Minimum improvement in validation loss to be
 #'   considered progress. Default 1e-4.
+#' @param pretrained Optional \code{PretrainedVNN} object. If provided,
+#'   the first hidden layer is initialized with ARCHS4-pretrained weights
+#'   instead of random Xavier initialization (Mode 2: fine-tuned transfer
+#'   learning). Genes in the architecture that are not in the pretrained
+#'   model receive zero initialization.
+#' @param class_weight Class weighting for imbalanced data. One of:
+#'   \describe{
+#'     \item{\code{NULL}}{No class weighting (default).}
+#'     \item{\code{"balanced"}}{Inverse-frequency weighting:
+#'       \eqn{w_c = n / (k \cdot n_c)} where \eqn{n} = total samples,
+#'       \eqn{k} = number of classes, \eqn{n_c} = samples in class \eqn{c}.}
+#'     \item{Named numeric}{Manual weights, e.g.
+#'       \code{c("Tumor" = 2.0, "Normal" = 1.0)}.}
+#'   }
 #' @param seed Integer. Random seed for reproducibility.
 #' @param verbose Logical. Print per-epoch progress? Default TRUE.
 #'
@@ -151,86 +180,150 @@ trainVNN <- function(se,
                      l1_lambda = 1e-4,
                      patience = 0L,
                      min_delta = 1e-4,
+                     pretrained = NULL,
+                     class_weight = NULL,
                      seed = 42L,
                      verbose = TRUE) {
-
-    task <- match.arg(task)
-
-    ## ---- ensure Julia is ready ----------------------------------------------
-    if (!.vnn_env$julia_ready) initJuliaBackend()
-
-    ## ---- extract expression matrix (genes x samples) -> (samples x genes) ---
-    if (is.null(assay_name)) {
-        assay_name <- SummarizedExperiment::assayNames(se)[1]
+  
+  task <- match.arg(task)
+  
+  ## ---- ensure Julia is ready ----------------------------------------------
+  if (!.vnn_env$julia_ready) initJuliaBackend()
+  
+  ## ---- extract expression matrix (genes x samples) -> (samples x genes) ---
+  if (is.null(assay_name)) {
+    assay_name <- SummarizedExperiment::assayNames(se)[1]
+  }
+  X <- t(as.matrix(SummarizedExperiment::assay(se, assay_name)))
+  
+  ## ---- extract labels -----------------------------------------------------
+  y_raw <- SummarizedExperiment::colData(se)[[label_col]]
+  if (task == "classification") {
+    y_factor <- as.factor(y_raw)
+    y <- as.integer(y_factor) - 1L  # 0-indexed
+  } else {
+    y <- y_raw
+  }
+  y <- as.numeric(y)
+  
+  ## ---- compute per-sample weights for class balancing ----------------------
+  sample_weights <- rep(1.0, length(y))
+  
+  if (!is.null(class_weight) && task == "classification") {
+    if (is.character(class_weight) && class_weight == "balanced") {
+      ## Inverse-frequency weighting: w_c = n / (k * n_c)
+      n <- length(y)
+      class_counts <- table(y)
+      k <- length(class_counts)
+      for (cls in names(class_counts)) {
+        cls_idx <- which(y == as.numeric(cls))
+        sample_weights[cls_idx] <- n / (k * class_counts[cls])
+      }
+      if (verbose) {
+        cat("Class weights (balanced):\n")
+        for (cls in names(class_counts)) {
+          w <- n / (k * class_counts[cls])
+          cat(sprintf("  Class %s (n=%d): weight=%.3f\n",
+                      cls, class_counts[cls], w))
+        }
+      }
+    } else if (is.numeric(class_weight)) {
+      ## Manual weights — map from label names to 0/1 encoding
+      if (is.null(names(class_weight))) {
+        stop("class_weight must be a named numeric vector, e.g. ",
+             "c('Tumor' = 2.0, 'Normal' = 1.0)", call. = FALSE)
+      }
+      levels_y <- levels(y_factor)
+      for (i in seq_along(levels_y)) {
+        lbl <- levels_y[i]
+        if (!lbl %in% names(class_weight)) {
+          stop(sprintf("class_weight missing label '%s'. ",
+                       "Available: %s", lbl,
+                       paste(names(class_weight), collapse = ", ")),
+               call. = FALSE)
+        }
+        cls_val <- i - 1L  # 0-indexed
+        sample_weights[y == cls_val] <- class_weight[lbl]
+      }
     }
-    X <- t(as.matrix(SummarizedExperiment::assay(se, assay_name)))
-    ## Now X is [n_samples x n_genes]
-
-    ## ---- extract labels -----------------------------------------------------
-    y <- SummarizedExperiment::colData(se)[[label_col]]
-    if (task == "classification") {
-        y <- as.integer(as.factor(y)) - 1L  # 0-indexed for binary cross-entropy
-    }
-    y <- as.numeric(y)
-
-    ## ---- transfer masks to Julia --------------------------------------------
-    masks <- layerMasks(architecture)
-    mask_names <- character(length(masks))
-    for (i in seq_along(masks)) {
-        varname <- paste0("mask_layer_", i)
-        .transferSparseMask(masks[[i]], varname)
-        mask_names[i] <- varname
-    }
-
-    ## ---- transfer data to Julia ---------------------------------------------
-    JuliaConnectoR::juliaCall("_vnn_receive_data",
-        X, y,
-        as.integer(nOutput(architecture)),
-        activationFunction(architecture)
+  }
+  
+  ## ---- transfer masks to Julia --------------------------------------------
+  masks <- layerMasks(architecture)
+  mask_names <- character(length(masks))
+  for (i in seq_along(masks)) {
+    varname <- paste0("mask_layer_", i)
+    .transferSparseMask(masks[[i]], varname)
+    mask_names[i] <- varname
+  }
+  
+  ## ---- transfer data to Julia ---------------------------------------------
+  JuliaConnectoR::juliaCall("_vnn_receive_data",
+                            X, y,
+                            as.integer(nOutput(architecture)),
+                            activationFunction(architecture)
+  )
+  
+  ## ---- transfer pretrained init weights (Mode 2) --------------------------
+  use_pretrained <- !is.null(pretrained)
+  if (use_pretrained) {
+    stopifnot(is(pretrained, "PretrainedVNN"))
+    
+    aligned <- .alignPretrainedToArchitecture(
+      pretrained, architecture, gene_id_type = "auto"
     )
-
-    ## ---- run training loop --------------------------------------------------
-    history_raw <- JuliaConnectoR::juliaCall("_vnn_train_vnn",
-        mask_names,
-        as.integer(epochs),
-        learning_rate,
-        as.integer(batch_size),
-        val_fraction,
-        l1_lambda,
-        as.integer(patience),
-        min_delta,
-        as.integer(seed),
-        verbose
+    
+    ## Send initial W and b to Julia
+    JuliaConnectoR::juliaCall("_vnn_receive_init_weights",
+                              aligned$W_init,
+                              aligned$b_init
     )
-
-    ## ---- pull back training history -----------------------------------------
-    ## Early stopping may return fewer epochs than requested
-    train_losses <- as.numeric(history_raw$train_losses)
-    val_losses <- as.numeric(history_raw$val_losses)
-    actual_epochs <- length(train_losses)
-
-    history_df <- data.frame(
-        epoch      = seq_len(actual_epochs),
-        train_loss = train_losses,
-        val_loss   = val_losses
-    )
-
-    ## ---- extract importance scores ------------------------------------------
-    importance <- .extractImportanceScores(architecture,
-                                           history_raw$model_ref)
-
-    ## ---- assemble VNNModel --------------------------------------------------
-    model <- new("VNNModel",
-        architecture      = architecture,
-        julia_model_ref   = history_raw$model_ref,
-        training_history  = history_df,
-        importance_scores = importance,
-        input_se          = se,
-        task              = task
-    )
-
-    model
+  }
+  
+  ## ---- run training loop --------------------------------------------------
+  history_raw <- JuliaConnectoR::juliaCall("_vnn_train_vnn",
+                                           mask_names,
+                                           as.integer(epochs),
+                                           learning_rate,
+                                           as.integer(batch_size),
+                                           val_fraction,
+                                           l1_lambda,
+                                           as.integer(patience),
+                                           min_delta,
+                                           as.integer(seed),
+                                           verbose,
+                                           sample_weights,
+                                           use_pretrained
+  )
+  
+  ## ---- pull back training history -----------------------------------------
+  train_losses <- as.numeric(history_raw$train_losses)
+  val_losses <- as.numeric(history_raw$val_losses)
+  actual_epochs <- length(train_losses)
+  
+  history_df <- data.frame(
+    epoch      = seq_len(actual_epochs),
+    train_loss = train_losses,
+    val_loss   = val_losses
+  )
+  
+  ## ---- extract importance scores ------------------------------------------
+  importance <- .extractImportanceScores(architecture,
+                                         history_raw$model_ref)
+  
+  ## ---- assemble VNNModel --------------------------------------------------
+  model <- new("VNNModel",
+               architecture      = architecture,
+               julia_model_ref   = history_raw$model_ref,
+               training_history  = history_df,
+               importance_scores = importance,
+               input_se          = se,
+               task              = task
+  )
+  
+  model
 }
+
 
 
 # =============================================================================

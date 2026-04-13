@@ -1,15 +1,22 @@
 # =============================================================================
 # training.jl — Training loop with biology-aware regularization + early stopping
+#
+# PATCHED vs original:
+#   1. train_vnn() accepts sample_weights vector for class-weighted loss
+#   2. train_vnn() accepts use_pretrained flag to init from INIT_STORE
+#   3. Backward-compatible: old 10-arg call signature still works
+#
+# Replace the existing training.jl with this file.
 # =============================================================================
 
 const MODEL_STORE = Dict{String, Any}()
 
-# Handle single mask name from R
-# JuliaConnectoR sends length-1 R character vectors as scalar String
+# Backward-compatible: old call with 10 args (no sample_weights, no pretrained)
 function train_vnn(mask_name::String, args...)
     return train_vnn([mask_name], args...)
 end
 
+# Old 10-arg signature: inject default sample_weights and use_pretrained=false
 function train_vnn(
     mask_names::Vector{String},
     epochs::Int64,
@@ -22,12 +29,36 @@ function train_vnn(
     seed::Int64,
     verbose::Bool
 )
+    n_samples = size(DATA_STORE["X"], 1)
+    sample_weights = ones(Float64, n_samples)
+    return train_vnn(
+        mask_names, epochs, lr, batch_size, val_frac, l1_lambda,
+        patience, min_delta, seed, verbose, sample_weights, false
+    )
+end
+
+# Full 12-arg signature with class weighting + pretrained init
+function train_vnn(
+    mask_names::Vector{String},
+    epochs::Int64,
+    lr::Float64,
+    batch_size::Int64,
+    val_frac::Float64,
+    l1_lambda::Float64,
+    patience::Int64,
+    min_delta::Float64,
+    seed::Int64,
+    verbose::Bool,
+    sample_weights::Vector{Float64},
+    use_pretrained::Bool
+)
     rng = Random.MersenneTwister(seed)
 
     X_all = DATA_STORE["X"]
     y_all = DATA_STORE["y"]
     n_output = DATA_STORE["n_output"]
     act_name = DATA_STORE["activation"]
+    sw_all = Float32.(sample_weights)
 
     n_samples = size(X_all, 1)
 
@@ -39,14 +70,49 @@ function train_vnn(
 
     X_train = X_all[train_idx, :]'
     y_train = reshape(y_all[train_idx], 1, :)
+    sw_train = sw_all[train_idx]
     X_val   = X_all[val_idx, :]'
     y_val   = reshape(y_all[val_idx], 1, :)
+    sw_val  = sw_all[val_idx]
     n_train = length(train_idx)
 
     # Build model
     act_fn = get_activation_fn(act_name)
     model = build_vnn_model(mask_names; n_output = n_output, activation_fn = act_fn)
     ps, st = Lux.setup(rng, model)
+
+    # ── Pretrained initialization (Mode 2) ──
+    if use_pretrained && haskey(INIT_STORE, "W_init")
+        W_init = INIT_STORE["W_init"]
+        b_init = INIT_STORE["b_init"]
+
+        layer_keys = collect(keys(ps))
+        first_key = layer_keys[1]
+        orig_W = ps[first_key].weight
+        orig_b = ps[first_key].bias
+
+        # Dimension check: W_init must match first layer weight shape
+        if size(W_init) == size(orig_W)
+            # Apply mask to pretrained weights (zero out forbidden connections)
+            if hasproperty(st[first_key], :mask)
+                W_init_masked = W_init .* st[first_key].mask
+            else
+                W_init_masked = W_init
+            end
+
+            # Replace the first layer's parameters
+            new_first = (weight = W_init_masked, bias = Float32.(b_init))
+            ps = merge(ps, NamedTuple{(first_key,)}((new_first,)))
+
+            if verbose
+                @info "Initialized first layer from pretrained weights " *
+                      "($(size(W_init, 1))×$(size(W_init, 2)))"
+            end
+        else
+            @warn "Pretrained weight dimensions $(size(W_init)) don't match " *
+                  "layer dimensions $(size(orig_W)). Using random init."
+        end
+    end
 
     # Optimizer
     opt = Optimisers.Adam(Float32(lr))
@@ -75,6 +141,7 @@ function train_vnn(
             idx = shuf[bs:be]
             xb = X_train[:, idx]
             yb = y_train[:, idx]
+            wb = sw_train[idx]  # per-sample weights for this batch
 
             result = Zygote.withgradient(ps) do p
                 y_hat, _ = model(xb, p, st)
@@ -82,9 +149,13 @@ function train_vnn(
                 if is_cls
                     eps = 1.0f-7
                     yc = clamp.(y_hat, eps, 1.0f0 - eps)
-                    data_loss = -mean(yb .* log.(yc) .+ (1.0f0 .- yb) .* log.(1.0f0 .- yc))
+                    # Weighted binary cross-entropy
+                    per_sample_loss = -(yb .* log.(yc) .+ (1.0f0 .- yb) .* log.(1.0f0 .- yc))
+                    # Apply sample weights and average
+                    data_loss = sum(per_sample_loss .* reshape(wb, 1, :)) / sum(wb)
                 else
-                    data_loss = mean((y_hat .- yb) .^ 2)
+                    per_sample_loss = (y_hat .- yb) .^ 2
+                    data_loss = sum(per_sample_loss .* reshape(wb, 1, :)) / sum(wb)
                 end
 
                 reg = 0.0f0
@@ -107,14 +178,16 @@ function train_vnn(
 
         push!(train_losses, epoch_loss / n_batches)
 
-        # Validation loss
+        # Validation loss (also weighted for consistency)
         y_hat_val, _ = model(X_val, ps, st)
         if is_cls
             eps = 1.0f-7
             yc = clamp.(y_hat_val, eps, 1.0f0 - eps)
-            current_val = -mean(y_val .* log.(yc) .+ (1.0f0 .- y_val) .* log.(1.0f0 .- yc))
+            per_sample_val = -(y_val .* log.(yc) .+ (1.0f0 .- y_val) .* log.(1.0f0 .- yc))
+            current_val = sum(per_sample_val .* reshape(sw_val, 1, :)) / sum(sw_val)
         else
-            current_val = mean((y_hat_val .- y_val) .^ 2)
+            per_sample_val = (y_hat_val .- y_val) .^ 2
+            current_val = sum(per_sample_val .* reshape(sw_val, 1, :)) / sum(sw_val)
         end
         push!(val_losses, current_val)
 

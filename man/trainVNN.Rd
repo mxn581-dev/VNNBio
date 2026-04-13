@@ -17,6 +17,8 @@ trainVNN(
   l1_lambda = 1e-04,
   patience = 0L,
   min_delta = 1e-04,
+  pretrained = NULL,
+  class_weight = NULL,
   seed = 42L,
   verbose = TRUE
 )
@@ -50,6 +52,22 @@ Default 0 (disabled).}
 
 \item{min_delta}{Numeric. Minimum improvement in validation loss to be
 considered progress. Default 1e-4.}
+
+\item{pretrained}{Optional \code{PretrainedVNN} object. If provided,
+the first hidden layer is initialized with ARCHS4-pretrained weights
+instead of random Xavier initialization (Mode 2: fine-tuned transfer
+learning). Genes in the architecture that are not in the pretrained
+model receive zero initialization.}
+
+\item{class_weight}{Class weighting for imbalanced data. One of:
+\describe{
+\item{\code{NULL}}{No class weighting (default).}
+\item{\code{"balanced"}}{Inverse-frequency weighting:
+\eqn{w_c = n / (k \cdot n_c)} where \eqn{n} = total samples,
+\eqn{k} = number of classes, \eqn{n_c} = samples in class \eqn{c}.}
+\item{Named numeric}{Manual weights, e.g.
+\code{c("Tumor" = 2.0, "Normal" = 1.0)}.}
+}}
 
 \item{seed}{Integer. Random seed for reproducibility.}
 
